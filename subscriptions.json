@@ -1,0 +1,4 @@
+[
+  {"feed": "https://rss.arxiv.org/rss/cs.CR", "expect": "计算机密码学：（期望方向：登录验证，密钥加密算法，椭圆算法方向）"},
+  {"feed": "https://rss.arxiv.org/rss/cs.AI", "expect": "强化学习，模型微调，模型鲁棒性方向"}
+]
