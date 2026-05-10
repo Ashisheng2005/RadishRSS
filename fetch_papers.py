@@ -28,11 +28,7 @@ from mysql_function import (
 
 # ====== Configuration ======
 
-@dataclass
 class Config:
-    # rss_feeds: list[str] = field(default_factory=lambda: [
-    #     "https://rss.arxiv.org/rss/cs.AI",
-    # ])
 
     save_dir: str = os.environ.get("PAPERS_SAVE_DIR", "./papers")
     translate_output_dir: str = os.environ.get("PAPERS_OUTPUT_DIR", "./output")

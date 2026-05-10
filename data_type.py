@@ -1,7 +1,6 @@
 # ====== Data Types ======
 import datetime
 
-@dataclass
 class PaperResult:
     arxiv_id: str
     title: str
