@@ -1,6 +1,7 @@
 # ====== Data Types ======
 import datetime
 
+@dataclass
 class PaperResult:
     arxiv_id: str
     title: str
@@ -22,3 +23,4 @@ class PaperResult:
             "is_read": False,
             "added_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+    

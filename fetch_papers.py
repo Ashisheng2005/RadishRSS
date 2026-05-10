@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 
 from log import setup_logger
-from data_type import PaperResult
+# from data_type import PaperResult
 from mysql_function import (
     clean_html,
     mysql_is_available,
@@ -26,8 +26,32 @@ from mysql_function import (
     upsert_metadata_to_mysql
     )
 
-# ====== Configuration ======
+@dataclass
+class PaperResult:
+    arxiv_id: str
+    title: str
+    authors: str
+    abstract_en: str
+    abstract_zh: str
+    pdf_url: str
+    pdf_local_path: str
+    published: str
 
+    def to_dict(self) -> dict:
+        return {
+            "title": self.title,
+            "authors": self.authors,
+            "abstract_en": self.abstract_en,
+            "abstract_zh": self.abstract_zh,
+            "pdf_url": self.pdf_url,
+            "published": self.published,
+            "is_read": False,
+            "added_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+
+# ====== Configuration ======
+@dataclass
 class Config:
 
     save_dir: str = os.environ.get("PAPERS_SAVE_DIR", "./papers")
@@ -104,9 +128,13 @@ class Config:
                             subs.append({"feed": item.get("feed", ""), "expect": item.get("expect", "")})
                     if subs:
                         return subs
+            else:
+                print(f"Subscriptions file not found: {self.subscriptions_file}, falling back to rss_feeds")
+                return []
+            
         except Exception:
             # Fall back to rss_feeds
-            logging.Logger.warning("Failed to load subscriptions from %s, falling back to rss_feeds", self.subscriptions_file)
+            print("Failed to load subscriptions from %s, falling back to rss_feeds", self.subscriptions_file)
             exit(1)
 
 # ====== Network Helpers ======
@@ -224,8 +252,8 @@ def translate_and_filter(text: str, expect: str, config: Config, logger: logging
     user_prompt = (
         "下面给出用户对论文方向的期望描述：\n"
         f"{expect}\n\n"
-        "请判断下面的英文摘要是否符合上述期望方向：如果不符合，只输出小写on，不要其他内容；"
-        "否则请把摘要完整翻译成中文并且只输出译文，不要附带任何解释或额外标记。\n\n摘要：\n" + text
+        "请判断下面的英文摘要是否符合上述期望方向,如果不符合，输出：#<NO>#，不要其他内容；"
+        "否则请把摘要完整翻译成中文并且只输出译文，不要附带任何形如‘符合期望方向，译文如下‘的解释或额外标记。\n\n摘要：\n" + text
     )
 
     payload = {
@@ -240,7 +268,7 @@ def translate_and_filter(text: str, expect: str, config: Config, logger: logging
             },
             {"role": "user", "content": user_prompt},
         ],
-        "temperature": 0.0,
+        "temperature": 0.7,
         "max_tokens": 8000,
         "thinking": {"type": "disabled"},
     }
@@ -474,15 +502,15 @@ def main() -> None:
                 summary_clean = clean_html(summary_raw)
 
                 logger.info("Filtering & translating abstract for %s...", arxiv_id)
-                translated_or_on = translate_and_filter(summary_clean, expect, config, logger)
-                if translated_or_on.strip().lower() == "on":
+                translated_or_no = translate_and_filter(summary_clean, expect, config, logger)
+                if "#<NO>#" in translated_or_no:
                     logger.info("Paper %s does not match expectation, skipping.", arxiv_id)
                     # still mark as fetched to avoid re-checking? No — we only
                     # mark as fetched when we accept and download.
                     continue
 
                 # Accepted paper: translated_or_on contains the Chinese abstract
-                result = process_paper(entry, config, logger, pre_translated_zh=translated_or_on)
+                result = process_paper(entry, config, logger, pre_translated_zh=translated_or_no)
                 if result is not None:
                     fetched.add(result.arxiv_id)
                     with open(config.fetched_log, "a") as f:
@@ -500,6 +528,7 @@ def main() -> None:
 
         save_metadata(papers_metadata, config, logger)
         # generate_blog_json(papers_metadata, config, logger)
+        logger.info("Metadata saved to %s", config.metadata_file)
         upsert_metadata_to_mysql(papers_metadata, config, logger)
 
         if new_pdf_paths:
