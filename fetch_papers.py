@@ -26,14 +26,13 @@ from mysql_function import (
     upsert_metadata_to_mysql
     )
 
-
 # ====== Configuration ======
 
 @dataclass
 class Config:
-    rss_feeds: list[str] = field(default_factory=lambda: [
-        "https://rss.arxiv.org/rss/cs.AI",
-    ])
+    # rss_feeds: list[str] = field(default_factory=lambda: [
+    #     "https://rss.arxiv.org/rss/cs.AI",
+    # ])
 
     save_dir: str = os.environ.get("PAPERS_SAVE_DIR", "./papers")
     translate_output_dir: str = os.environ.get("PAPERS_OUTPUT_DIR", "./output")
@@ -47,7 +46,7 @@ class Config:
     deepseek_model: str = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 
     max_per_run: int = 15
-    max_workers: int = 5
+    max_workers: int = 2
     download_timeout: int = 120
     api_timeout: int = 60
 
@@ -69,7 +68,7 @@ class Config:
     mysql_host: str = os.environ.get("MYSQL_HOST", "127.0.0.1")
     mysql_port: int = int(os.environ.get("MYSQL_PORT", "3306"))
     mysql_user: str = os.environ.get("MYSQL_USER", "root")
-    mysql_password: str = os.environ.get("MYSQL_PASSWORD", "")
+    mysql_password: str = os.environ.get("MYSQL_PASSWORD", "123456")
     mysql_database: str = os.environ.get("MYSQL_DATABASE", "radish_rss")
     mysql_charset: str = os.environ.get("MYSQL_CHARSET", "utf8mb4")
     migrations_dir: str = os.environ.get("PAPERS_MIGRATIONS_DIR", "./migrations")
@@ -96,7 +95,7 @@ class Config:
         Backwards-compatible: if `rss_feeds` contains strings, convert them
         to entries with empty `expect`.
         """
-        subs: list[Dict[str, str]] = []
+        subs: list[Dict[str, strl.warn]] = []
         # Try loading subscriptions_file if exists
         try:
             if os.path.exists(self.subscriptions_file):
@@ -111,12 +110,8 @@ class Config:
                         return subs
         except Exception:
             # Fall back to rss_feeds
-            pass
-
-        # Fallback: convert rss_feeds strings to dicts
-        for f in self.rss_feeds:
-            subs.append({"feed": f, "expect": ""})
-        return subs
+            logging.Logger.warning("Failed to load subscriptions from %s, falling back to rss_feeds", self.subscriptions_file)
+            exit(1)
 
 # ====== Network Helpers ======
 
@@ -233,7 +228,7 @@ def translate_and_filter(text: str, expect: str, config: Config, logger: logging
     user_prompt = (
         "下面给出用户对论文方向的期望描述：\n"
         f"{expect}\n\n"
-        "请判断下面的英文摘要是否符合上述期望方向：如果不符合，__只输出小写on，不要其他内容__；"
+        "请判断下面的英文摘要是否符合上述期望方向：如果不符合，只输出小写on，不要其他内容；"
         "否则请把摘要完整翻译成中文并且只输出译文，不要附带任何解释或额外标记。\n\n摘要：\n" + text
     )
 
@@ -375,39 +370,6 @@ def save_metadata(metadata: dict, config: Config, logger: logging.Logger) -> Non
         json.dump(metadata, f, ensure_ascii=False, indent=2)
     logger.info("Metadata saved (%d papers)", len(metadata))
 
-
-# def generate_blog_json(metadata: dict, config: Config, logger: logging.Logger) -> None:
-#     # Load existing blog data to preserve user-edited fields (e.g., is_read)
-#     existing = {}
-#     if os.path.exists(config.blog_json_file):
-#         try:
-#             with open(config.blog_json_file, encoding="utf-8") as f:
-#                 for item in json.load(f):
-#                     existing[item["id"]] = item
-#         except Exception as e:
-#             logger.warning("Failed to load existing blog JSON, rebuilding: %s", e)
-
-#     blog_data = []
-#     for arxiv_id, meta in metadata.items():
-#         old = existing.get(arxiv_id, {})
-#         blog_data.append({
-#             "id": arxiv_id,
-#             "title": meta.get("title", ""),
-#             "authors": meta.get("authors", ""),
-#             "abstract_en": meta.get("abstract_en", ""),
-#             "abstract_zh": meta.get("abstract_zh", ""),
-#             "pdf_url": meta.get("pdf_url", ""),
-#             "published": meta.get("published", ""),
-#             "is_read": old.get("is_read", meta.get("is_read", False)),
-#             "added_date": meta.get("added_date", ""),
-#         })
-#     blog_data.sort(key=lambda x: x["added_date"], reverse=True)
-#     os.makedirs(config.translate_output_dir, exist_ok=True)
-#     with open(config.blog_json_file, "w", encoding="utf-8") as f:
-#         json.dump(blog_data, f, ensure_ascii=False, indent=2)
-#     logger.info("Blog data generated: %d papers", len(blog_data))
-
-
 # ====== Paper Processing ======
 
 def process_paper(entry, config: Config, logger: logging.Logger, pre_translated_zh: Optional[str] = None) -> Optional[PaperResult]:
@@ -444,7 +406,6 @@ def process_paper(entry, config: Config, logger: logging.Logger, pre_translated_
         pdf_local_path=pdf_path,
         published=published,
     )
-
 
 # ====== Main ======
 
