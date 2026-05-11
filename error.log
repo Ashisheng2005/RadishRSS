@@ -1,0 +1,29 @@
+Traceback (most recent call last):
+arxiv-translator  |   File "/usr/local/lib/python3.12/site-packages/pymysql/connections.py", line 661, in connect
+arxiv-translator  |     sock = socket.create_connection(
+arxiv-translator  |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+arxiv-translator  |   File "/usr/local/lib/python3.12/socket.py", line 865, in create_connection
+arxiv-translator  |     raise exceptions[0]
+arxiv-translator  |   File "/usr/local/lib/python3.12/socket.py", line 850, in create_connection
+arxiv-translator  |     sock.connect(sa)
+arxiv-translator  | ConnectionRefusedError: [Errno 111] Connection refused
+arxiv-translator  | 
+arxiv-translator  | During handling of the above exception, another exception occurred:
+arxiv-translator  | 
+arxiv-translator  | Traceback (most recent call last):
+arxiv-translator  |   File "/app/RadishRSS/fetch_papers.py", line 548, in <module>
+arxiv-translator  |     main()
+arxiv-translator  |   File "/app/RadishRSS/fetch_papers.py", line 534, in main
+arxiv-translator  |     upsert_metadata_to_mysql(papers_metadata, config, logger)
+arxiv-translator  |   File "/app/RadishRSS/mysql_function.py", line 132, in upsert_metadata_to_mysql
+arxiv-translator  |     conn = get_mysql_connection(config)
+arxiv-translator  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+arxiv-translator  |   File "/app/RadishRSS/mysql_function.py", line 28, in get_mysql_connection
+arxiv-translator  |     return pymysql.connect(
+arxiv-translator  |            ^^^^^^^^^^^^^^^^
+arxiv-translator  |   File "/usr/local/lib/python3.12/site-packages/pymysql/connections.py", line 365, in __init__
+arxiv-translator  |     self.connect()
+arxiv-translator  |   File "/usr/local/lib/python3.12/site-packages/pymysql/connections.py", line 723, in connect
+arxiv-translator  |     raise exc
+arxiv-translator  | pymysql.err.OperationalError: (2003, "Can't connect to MySQL server on '127.0.0.1' ([Errno 111] Connection refused)")
+arxiv-translator exited with code 1 (restarting)

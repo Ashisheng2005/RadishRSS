@@ -78,13 +78,15 @@ class Config:
     run_interval: int = int(os.environ.get("PAPERS_RUN_INTERVAL", "0"))
 
     # Number of matched (符合期望方向) papers to collect per run
-    target_match_count: int = int(os.environ.get("TARGET_MATCH_COUNT", "5"))
+    target_match_count: int = int(os.environ.get("TARGET_MATCH_COUNT", "1"))
 
     # Optional subscriptions json file. If present, it should contain an array of
     # objects: {"feed": "https://...", "expect": "期望方向描述"}
     subscriptions_file: str = os.environ.get("SUBSCRIPTIONS_FILE", "./subscriptions.json")
 
-    mysql_enabled: bool = os.environ.get("MYSQL_ENABLED", "0").lower() in {"1", "true", "yes", "on"}
+
+    # 是否启用 MySQL 持久化，默认为 False，可以通过环境变量 MYSQL_ENABLED=1 来启用
+    mysql_enabled: bool = os.environ.get("MYSQL_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
     mysql_host: str = os.environ.get("MYSQL_HOST", "127.0.0.1")
     mysql_port: int = int(os.environ.get("MYSQL_PORT", "3306"))
     mysql_user: str = os.environ.get("MYSQL_USER", "root")
@@ -148,7 +150,7 @@ TRANSIENT_ERRORS = (
 def is_transient_status(status: int) -> bool:
     return status >= 500 or status == 429
 
-
+mysql_enabled
 def download_pdf(url: str, filename: str, config: Config, logger: logging.Logger) -> Optional[str]:
     filepath = os.path.join(config.save_dir, filename)
     for attempt in range(config.max_retries + 1):
