@@ -26,6 +26,8 @@ from mysql_function import (
     upsert_metadata_to_mysql
     )
 
+from email_server import EmilServer
+
 @dataclass
 class PaperResult:
     arxiv_id: str
@@ -95,6 +97,18 @@ class Config:
     mysql_charset: str = os.environ.get("MYSQL_CHARSET", "utf8mb4")
     migrations_dir: str = os.environ.get("PAPERS_MIGRATIONS_DIR", "./migrations")
 
+    # Default RSS feeds (used when subscriptions_file is missing or empty)
+    rss_feeds: list = field(default_factory=lambda: [
+        "https://rss.arxiv.org/rss/cs.AI",
+    ])
+
+    # Email configuration
+    email_host: str = os.environ.get("EMAIL_HOST", "smtp.qq.com")
+    email_port: int = int(os.environ.get("EMAIL_PORT", "465"))
+    email_pwd: str = os.environ.get("EMAIL_PWD", "qilbnbisolrbdafd")
+    email_sender: str = os.environ.get("EMAIL_SENDER", "radishtools@foxmail.com")
+    email_receivers: list = field(default_factory=lambda: os.environ.get("EMAIL_RECEIVERS", "repork@qq.com").split(","))
+
     @property
     def fetched_log(self) -> str:
         return os.path.join(self.logs_dir, "fetched.log")
@@ -114,11 +128,9 @@ class Config:
     def load_subscriptions(self) -> list[Dict[str, str]]:
         """Return list of subscriptions with keys 'feed' and 'expect'.
 
-        Backwards-compatible: if `rss_feeds` contains strings, convert them
-        to entries with empty `expect`.
+        Falls back to `rss_feeds` if the subscriptions file is missing or invalid.
         """
-        subs: list[Dict[str, strl.warn]] = []
-        # Try loading subscriptions_file if exists
+        subs: list[Dict[str, str]] = []
         try:
             if os.path.exists(self.subscriptions_file):
                 with open(self.subscriptions_file, encoding="utf-8") as f:
@@ -130,14 +142,14 @@ class Config:
                             subs.append({"feed": item.get("feed", ""), "expect": item.get("expect", "")})
                     if subs:
                         return subs
-            else:
-                print(f"Subscriptions file not found: {self.subscriptions_file}, falling back to rss_feeds")
-                return []
-            
-        except Exception:
-            # Fall back to rss_feeds
-            print("Failed to load subscriptions from %s, falling back to rss_feeds", self.subscriptions_file)
-            exit(1)
+            print(f"Subscriptions file not found or empty: {self.subscriptions_file}, falling back to rss_feeds")
+        except Exception as e:
+            print(f"Failed to load subscriptions from {self.subscriptions_file}: {e}, falling back to rss_feeds")
+
+        # Fallback: use default rss_feeds
+        for url in self.rss_feeds:
+            subs.append({"feed": url, "expect": ""})
+        return subs
 
 # ====== Network Helpers ======
 
@@ -150,7 +162,6 @@ TRANSIENT_ERRORS = (
 def is_transient_status(status: int) -> bool:
     return status >= 500 or status == 429
 
-mysql_enabled
 def download_pdf(url: str, filename: str, config: Config, logger: logging.Logger) -> Optional[str]:
     filepath = os.path.join(config.save_dir, filename)
     for attempt in range(config.max_retries + 1):
@@ -433,6 +444,50 @@ def process_paper(entry, config: Config, logger: logging.Logger, pre_translated_
         published=published,
     )
 
+def build_email_html(results: list[PaperResult], elapsed: float) -> str:
+    """Build HTML email content listing newly processed papers."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    papers_html = ""
+    for i, paper in enumerate(results, 1):
+        abstract_link = f"https://arxiv.org/abs/{paper.arxiv_id}"
+        abstract_preview = (paper.abstract_zh[:300] + "...") if len(paper.abstract_zh) > 300 else paper.abstract_zh
+        papers_html += f"""
+        <tr>
+            <td style="padding:20px 0;border-bottom:1px solid #eee;">
+                <h3 style="margin:0 0 8px;font-size:16px;">
+                    <a href="{abstract_link}" style="color:#0366d6;text-decoration:none;">{i}. {paper.title}</a>
+                </h3>
+                <p style="margin:0 0 6px;color:#666;font-size:13px;">作者: {paper.authors}</p>
+                <p style="margin:0 0 6px;color:#333;font-size:14px;line-height:1.6;">{abstract_preview}</p>
+                <a href="{paper.pdf_url}" style="color:#0366d6;font-size:13px;">PDF 下载</a>
+            </td>
+        </tr>"""
+
+    return f"""
+    <html>
+    <head><meta charset="utf-8"></head>
+    <body style="margin:0;padding:0;background:#f5f5f5;font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;">
+        <div style="max-width:640px;margin:0 auto;background:#fff;">
+            <div style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);padding:32px 24px;text-align:center;">
+                <h1 style="color:#fff;margin:0 0 8px;font-size:24px;">RadishRSS 论文更新</h1>
+                <p style="color:rgba(255,255,255,0.85);margin:0;font-size:14px;">
+                    共 {len(results)} 篇新论文 | {now}
+                </p>
+            </div>
+            <table style="width:100%;padding:0 24px;border-collapse:collapse;">
+                {papers_html}
+            </table>
+            <div style="padding:24px;text-align:center;color:#999;font-size:12px;border-top:1px solid #eee;">
+                <p>RadishRSS 自动推送</p>
+                <p><a href="https://radishtools.fun/papers" style="color:#0366d6;">查看全部论文</a></p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
 # ====== Main ======
 
 def main() -> None:
@@ -460,13 +515,11 @@ def main() -> None:
         logger.info("Starting paper fetch run...")
         start_time = time.monotonic()
 
-        new_count = 0
         new_pdf_paths: list[str] = []
+        new_results: list[PaperResult] = []
 
-        # Track how many papers matched user expectations this run
         matched_count = 0
 
-        # Load subscriptions (feed + expected direction)
         subs = config.load_subscriptions()
 
         for sub in subs:
@@ -505,7 +558,7 @@ def main() -> None:
 
                 logger.info("Filtering & translating abstract for %s...", arxiv_id)
                 translated_or_no = translate_and_filter(summary_clean, expect, config, logger)
-                if "#<NO>#" in translated_or_no:
+                if "#<NO>#" in translated_or_no or "#NO#" in translated_or_no:
                     logger.info("Paper %s does not match expectation, skipping.", arxiv_id)
                     # still mark as fetched to avoid re-checking? No — we only
                     # mark as fetched when we accept and download.
@@ -519,24 +572,39 @@ def main() -> None:
                         f.write(result.arxiv_id + "\n")
                     papers_metadata[result.arxiv_id] = result.to_dict()
                     new_pdf_paths.append(result.pdf_local_path)
-                    new_count += 1
+                    new_results.append(result)
                     matched_count += 1
 
-            if matched_count >= config.target_match_count:
-                break
-
         elapsed = time.monotonic() - start_time
-        logger.info("Run complete. %d new papers | Duration: %.1fs", new_count, elapsed)
+        logger.info("Run complete. %d new papers | Duration: %.1fs", len(new_results), elapsed)
 
-        save_metadata(papers_metadata, config, logger)
-        # generate_blog_json(papers_metadata, config, logger)
-        logger.info("Metadata saved to %s", config.metadata_file)
-        upsert_metadata_to_mysql(papers_metadata, config, logger)
-
-        if new_pdf_paths:
+        if new_results:
+            save_metadata(papers_metadata, config, logger)
+            logger.info("Metadata saved to %s", config.metadata_file)
+            upsert_metadata_to_mysql(papers_metadata, config, logger)
             batch_translate_pdfs(new_pdf_paths, config, logger)
+
+            # Send email notification with only the newly processed papers
+            html = build_email_html(new_results, elapsed)
+            try:
+                em = EmilServer()
+                # em.mail_host = config.email_host
+                # em.mail_port = config.email_port
+                # em.mail_pwd = config.email_pwd
+                # em.sender = config.email_sender
+                message = em.create_mime(
+                    html,
+                    config.email_receivers,
+                    "RadishRSS 论文更新通知",
+                    usertype="html",
+                )
+                login = em.init_ssl_smtp()
+                em.send_info(message, login)
+                logger.info("Email notification sent to %s", config.email_receivers)
+            except Exception as e:
+                logger.error("Failed to send email: %s", e)
         else:
-            logger.info("No new PDFs to translate.")
+            logger.info("No new papers matched in this run.")
 
         if not loop:
             break

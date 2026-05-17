@@ -35,7 +35,7 @@ def get_mysql_connection(config):
         autocommit=False,
         cursorclass=pymysql.cursors.DictCursor,
     )
-
+    
 
 def ensure_migration_table(conn) -> None:
     with conn.cursor() as cursor:
