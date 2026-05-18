@@ -88,7 +88,7 @@ class Config:
 
 
     # 是否启用 MySQL 持久化，默认为 False，可以通过环境变量 MYSQL_ENABLED=1 来启用
-    mysql_enabled: bool = os.environ.get("MYSQL_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
+    mysql_enabled: bool = os.environ.get("MYSQL_ENABLED", "0").lower() in {"1", "true", "yes", "on"}
     mysql_host: str = os.environ.get("MYSQL_HOST", "127.0.0.1")
     mysql_port: int = int(os.environ.get("MYSQL_PORT", "3306"))
     mysql_user: str = os.environ.get("MYSQL_USER", "root")
@@ -249,12 +249,12 @@ def translate_text(text: str, config: Config, logger: logging.Logger) -> str:
 def translate_and_filter(text: str, expect: str, config: Config, logger: logging.Logger) -> str:
     """Ask the translation API to both check expectation and translate.
 
-    If the abstract does not match `expect`, the API should return the literal
-    string "on". Otherwise it should return the translated abstract.
+    If the abstract does not match `expect`, the API should return
+    "#<NO>#". Otherwise it should return the translated abstract.
     """
     if not config.deepseek_api_key:
-        logger.warning("No API key configured, cannot translate/filter; returning on")
-        return "on"
+        logger.warning("No API key configured, cannot translate/filter; returning #<NO>#")
+        return "#<NO>#"
 
     headers = {
         "Authorization": f"Bearer {config.deepseek_api_key}",
@@ -297,13 +297,14 @@ def translate_and_filter(text: str, expect: str, config: Config, logger: logging
             if resp.status_code == 200:
                 result = resp.json()
                 content = result["choices"][0]["message"]["content"].strip()
-                if content.lower() == "on":
-                    return "on"
+                content_lower = content.lower()
+                if content_lower == "on" or "#<no>#" in content_lower:
+                    return "#<NO>#"
                 return content
             if is_transient_status(resp.status_code):
                 raise requests.exceptions.HTTPError(f"HTTP {resp.status_code}", response=resp)
-            logger.warning("Permanent API error HTTP %d, returning on", resp.status_code)
-            return "on"
+            logger.warning("Permanent API error HTTP %d, returning #<NO>#", resp.status_code)
+            return "#<NO>#"
         except TRANSIENT_ERRORS as e:
             if attempt < config.max_retries:
                 delay = config.retry_base_delay * (2 ** attempt)
@@ -313,11 +314,11 @@ def translate_and_filter(text: str, expect: str, config: Config, logger: logging
                 )
                 time.sleep(delay)
             else:
-                logger.error("API retries exhausted, returning on")
+                logger.error("API retries exhausted, returning #<NO>#")
         except Exception as e:
             logger.error("Unexpected API error: %s", e)
-            return "on"
-    return "on"
+            return "#<NO>#"
+    return "#<NO>#"
 
 
 # ====== pdf2zh Batch Translation ======
@@ -402,9 +403,14 @@ def reconcile_fetched_set(
 
 
 def save_metadata(metadata: dict, config: Config, logger: logging.Logger) -> None:
+    if not metadata:
+        logger.warning("No metadata to save, skipping write")
+        return
     os.makedirs(config.translate_output_dir, exist_ok=True)
-    with open(config.metadata_file, "w", encoding="utf-8") as f:
+    tmp = config.metadata_file + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, config.metadata_file)
     logger.info("Metadata saved (%d papers)", len(metadata))
 
 # ====== Paper Processing ======
@@ -499,7 +505,10 @@ def main() -> None:
 
     if config.mysql_enabled:
         logger.info("MySQL persistence enabled, applying migrations...")
-        apply_sql_migrations(config, logger)
+        try:
+            apply_sql_migrations(config, logger)
+        except Exception as e:
+            logger.error("MySQL migration failed, continuing without persistence: %s", e)
 
     loop = config.run_interval > 0
     if loop:
@@ -532,13 +541,17 @@ def main() -> None:
                 logger.error("Feed parse failed: %s", e)
                 continue
 
+            if not feed.entries:
+                logger.warning("Feed %s returned 0 entries (possible network issue)", feed_url)
+                continue
+
             pending = []
             for entry in feed.entries:
                 arxiv_id = entry.id.split("/")[-1]
                 if arxiv_id not in fetched:
                     pending.append(entry)
             if not pending:
-                logger.info("No new papers in feed %s", feed_url)
+                logger.info("No new papers in feed %s (all %d entries already in fetched set)", feed_url, len(feed.entries))
                 continue
 
             logger.info("Checking %d candidate(s) from %s", len(pending), feed_url)
@@ -581,7 +594,10 @@ def main() -> None:
         if new_results:
             save_metadata(papers_metadata, config, logger)
             logger.info("Metadata saved to %s", config.metadata_file)
-            upsert_metadata_to_mysql(papers_metadata, config, logger)
+            try:
+                upsert_metadata_to_mysql(papers_metadata, config, logger)
+            except Exception as e:
+                logger.error("MySQL upsert failed, metadata saved to file: %s", e)
             batch_translate_pdfs(new_pdf_paths, config, logger)
 
             # Send email notification with only the newly processed papers

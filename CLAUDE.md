@@ -56,7 +56,7 @@ pip install feedparser requests pymysql pdf2zh
 
 ## Code Architecture
 
-Four files, no framework, no tests.
+Five Python source files, no framework, no tests.
 
 ### File Map
 
@@ -66,9 +66,10 @@ Four files, no framework, no tests.
 | `mysql_function.py` | MySQL persistence helpers (clean_html, migrations, upsert) |
 | `email_server.py` | SMTP email sending via QQ mail |
 | `log.py` | Logger setup (file + console, DEBUG level) |
+| `data_type.py` | Unused — `PaperResult` dataclass is defined inline in `fetch_papers.py` |
 | `migrations/001_init.sql` | MySQL schema: `papers` table with arXiv metadata |
 
-### Data Flow (current)
+### Data Flow
 
 ```
 subscriptions.json ──→ load_subscriptions()
@@ -83,13 +84,11 @@ for each subscription (feed + expect):
                                   ├── download_pdf() → {save_dir}/{arxiv_id}.pdf
                                   └── PaperResult (title, authors, abstract_zh, ...)
                                       ↓
-    save all metadata → papers_metadata.json
-    upsert to MySQL    → papers table
+    save all metadata → papers_metadata.json (atomic write)
+    upsert to MySQL    → papers table (non-fatal on error)
     batch_translate_pdfs() → pdf2zh (incremental via translated.log)
     send email         → HTML summary of new papers only
 ```
-
-Key difference from earlier versions: processing is **sequential** per-entry, not parallel. The API call both filters (does it match the user's expectation?) and translates in a single request, avoiding wasted API cost on irrelevant papers.
 
 ### State Files
 
@@ -107,20 +106,30 @@ Key difference from earlier versions: processing is **sequential** per-entry, no
 | Field | Default | Purpose |
 |---|---|---|
 | `target_match_count` | `1` | Stop after this many matched papers |
-| `max_workers` | `2` | (unused — kept for compat, processing is sequential) |
-| `max_per_run` | `15` | Max candidates per run |
-| `rss_feeds` | `[cs.AI]` | Fallback feeds when subscriptions_file is missing |
+| `run_interval` | `0` | Loop mode interval (seconds); 0 = one-shot |
+| `rss_feeds` | `[cs.AI]` | Fallback feeds when subscriptions_file missing |
 | `subscriptions_file` | `./subscriptions.json` | Primary feed source with expectations |
 
 ## Key Design Decisions
 
 - **Filter-before-download**: `translate_and_filter()` calls the API once to both judge relevance and translate. Only if the paper matches the user's expectation (`expect` field in subscriptions.json) does the code proceed to PDF download. This avoids wasting bandwidth and API cost on irrelevant papers.
-- **Sequential processing**: Entries are processed one-by-one because each requires an API call (filter+translate). No parallelism — the old ThreadPoolExecutor path is gone.
-- **Subscription system**: Each feed has an `expect` field describing the user's research direction in natural language. The LLM judges relevance and only returns papers that match. `target_match_count` limits how many matching papers to collect per run.
-- **Single-API-call trick**: `translate_and_filter()` sends the abstract + expectation together. If it doesn't match, the API returns `on` (a no-op signal). If it matches, the API returns the Chinese translation directly — no second call needed.
+- **Single-API-call trick**: The user prompt embeds the expectation description and tells the API to return `#<NO>#` for non-matching papers, or the Chinese translation for matching ones. No second API call needed.
+- **Sequential processing**: Entries are processed one-by-one because each requires a synchronous API call. The old ThreadPoolExecutor path is gone.
+- **Subscription system**: Each feed has an `expect` field describing the user's research direction in natural language. `target_match_count` limits how many matching papers to collect per run.
 - **Dual-source dedup**: Both `fetched.log` lines and `papers_metadata.json` keys are merged at startup via `reconcile_fetched_set()`. If files drift, `fetched.log` is repaired. Orphaned IDs (in log but no metadata) are reported and auto-cleaned.
+- **Empty feed detection**: If `feedparser.parse()` returns 0 entries, a WARNING is logged (not just "No new papers"), so transient network issues in Docker are visible.
+- **Atomic metadata writes**: `papers_metadata.json` is written via tmp file + `os.replace()` to prevent corruption. Empty metadata dicts are rejected.
+- **Graceful MySQL degradation**: MySQL connection/migration/upsert failures are caught and logged, never crash the main loop. Metadata always goes to JSON file regardless of MySQL state.
 - **Incremental pdf2zh**: Only untranslated PDFs (per `translated.log`) are sent to `pdf2zh`, not the entire directory.
-- **MySQL upsert**: When enabled, metadata is upserted into the `papers` table. Migration files in `migrations/` are applied in order via `schema_migrations` tracking table.
-- **Email on match**: When new papers are matched, an HTML email is sent with title, authors, abstract preview, and PDF links for only the current run's papers.
 - **Error tiers**: Transient (timeout, 5xx, 429) → retry with exponential backoff; Permanent (404, 403) → skip immediately; Fatal → abort.
 - **Loop mode**: Set `PAPERS_RUN_INTERVAL` instead of cron. Avoids concurrent runs on the same state files.
+
+## Common Issues
+
+### fetched.log accumulation blocks new papers
+`fetched.log` retains every arXiv ID ever matched. If `papers_metadata.json` is lost/reset (Docker volume reset, manual deletion, etc.), the metadata orphans accumulate in `fetched.log` forever. When the orphan count exceeds the feed size, all feed entries appear as "already fetched" → zero papers processed.
+
+**Fix:** Delete `logs/fetched.log` to reset the dedup state. The script will reprocess all current feed entries.
+
+### translate_and_filter return value mismatch
+The function's system prompt says to return `#<NO>#` for non-matching papers. The caller and the function itself must agree on this sentinel. If they fall out of sync (e.g. old `on` format), non-matching papers can accidentally pass through as matches, or matching papers get skipped.
